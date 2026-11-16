@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const fallbackTracks = [
@@ -8,6 +8,14 @@ const fallbackTracks = [
   { id: 4, title: 'Sweet Disposition', artist: 'The Temper Trap', album: 'Conditions', color: 'pink', time: '3:54' },
   { id: 5, title: 'Space Song', artist: 'Beach House', album: 'Depression Cherry', color: 'teal', time: '5:20' },
 ]
+
+const demoAudio = {
+  1: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+  2: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+  3: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+  4: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+  5: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3',
+}
 
 function Icon({ name, size = 20, fill = 'none' }) {
   const paths = {
@@ -27,7 +35,8 @@ function Cover({ color = 'violet', small = false }) {
 }
 
 function App() {
-  const [tracks, setTracks] = useState(fallbackTracks)
+  const audioRef = useRef(null)
+  const [tracks, setTracks] = useState(fallbackTracks.map((track) => ({ ...track, audioUrl: demoAudio[track.id] })))
   const [playlists, setPlaylists] = useState([])
   const [view, setView] = useState('home')
   const [activeId, setActiveId] = useState(1)
@@ -43,7 +52,7 @@ function App() {
     Promise.all([fetch('/api/tracks').then((response) => response.json()), fetch('/api/playback').then((response) => response.json()), fetch('/api/playlists').then((response) => response.json())])
       .then(([trackResponse, playbackResponse, playlistResponse]) => {
         if (trackResponse.success) {
-          const loadedTracks = trackResponse.data.map((track) => ({ ...track, time: track.duration }))
+          const loadedTracks = trackResponse.data.map((track) => ({ ...track, time: track.duration, audioUrl: track.audio_url || demoAudio[track.id] }))
           setTracks(loadedTracks)
           setLiked(Boolean(loadedTracks.find((track) => track.id === activeId)?.liked))
         }
@@ -57,18 +66,36 @@ function App() {
       }).catch(() => {})
   }, [])
   useEffect(() => {
-    if (!playing || !active) return undefined
-    const timer = window.setInterval(() => setProgress((current) => {
-      const nextProgress = current + (100 / Math.max(active.duration_seconds || 240, 1))
-      if (nextProgress >= 100) { nextTrack(); return 0 }
-      return nextProgress
-    }), 1000)
-    return () => window.clearInterval(timer)
-  }, [playing, activeId, active])
+    if (!audioRef.current || !active?.audioUrl) return
+    audioRef.current.src = active.audioUrl
+    audioRef.current.volume = volume / 100
+    const playPromise = playing ? audioRef.current.play() : Promise.resolve(audioRef.current.pause())
+    if (playPromise?.catch) playPromise.catch(() => setPlaying(false))
+  }, [activeId, active?.audioUrl])
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = volume / 100
+      if (playing) audioRef.current.play().catch(() => setPlaying(false))
+      else audioRef.current.pause()
+    }
+  }, [playing, volume])
+  useEffect(() => {
+    const range = document.querySelector('.progress input')
+    if (!range) return undefined
+    range.value = progress
+    const seek = () => {
+      if (!audioRef.current) return
+      const duration = audioRef.current.duration || active.duration_seconds || 240
+      audioRef.current.currentTime = (Number(range.value) / 100) * duration
+      savePlayback({ track_id: active.id, is_playing: playing, volume, position_seconds: Math.round(audioRef.current.currentTime) })
+    }
+    range.addEventListener('input', seek)
+    return () => range.removeEventListener('input', seek)
+  }, [progress, activeId, playing, volume])
   const loadPlaylist = (playlistId) => {
     fetch(`/api/playlists/${playlistId}`).then((response) => response.json()).then((response) => {
       if (!response.success || !response.data.tracks.length) return
-      setTracks(response.data.tracks.map((track) => ({ ...track, time: track.duration })))
+      setTracks(response.data.tracks.map((track) => ({ ...track, time: track.duration, audioUrl: track.audio_url || demoAudio[track.id] })))
       setActiveId(response.data.tracks[0].id)
       setPlaying(true)
       setView('library')
@@ -80,6 +107,16 @@ function App() {
     setProgress(nextProgress)
     savePlayback({ track_id: active.id, is_playing: playing, volume, position_seconds: Math.round((nextProgress / 100) * (active.duration_seconds || 240)) })
   }
+  const addLocalAudio = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const localTrack = { id: Date.now(), title: file.name.replace(/\.[^/.]+$/, ''), artist: 'Local file', album: 'Your device', color: 'violet', time: '--:--', duration_seconds: 0, audioUrl: URL.createObjectURL(file) }
+    setTracks((currentTracks) => [...currentTracks, localTrack])
+    setActiveId(localTrack.id)
+    setPlaying(true)
+    setProgress(0)
+    event.target.value = ''
+  }
   const chooseTrack = (id) => { setActiveId(id); setPlaying(true); setLiked(false); savePlayback({ track_id: id, is_playing: true, volume }) ; fetch(`/api/tracks/${id}/like`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ liked: false }) }).catch(() => {}) }
   const nextTrack = () => chooseTrack(activeId === tracks.length ? 1 : activeId + 1)
   const previousTrack = () => chooseTrack(activeId === 1 ? tracks.length : activeId - 1)
@@ -87,6 +124,8 @@ function App() {
 
   return (
     <main className="app-shell">
+      <audio ref={audioRef} preload="metadata" onTimeUpdate={(event) => { const duration = event.currentTarget.duration || active.duration_seconds || 240; setProgress((event.currentTarget.currentTime / duration) * 100) }} onEnded={nextTrack} />
+      <label className="upload-local" style={{ position: 'fixed', right: 24, top: 22, zIndex: 4, padding: '9px 14px', borderRadius: 6, background: '#292431', color: '#d4bafc', fontSize: 11, cursor: 'pointer' }}>Add local song<input type="file" accept="audio/*" onChange={addLocalAudio} style={{ display: 'none' }} /></label>
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><i/><i/><i/></span><span>luma</span></div>
         <nav className="main-nav" aria-label="Main navigation"><button className={`nav-item ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}><Icon name="home"/> Home</button><button className={`nav-item ${view === 'discover' ? 'active' : ''}`} onClick={() => { setView('discover'); setQuery('') }}><Icon name="compass"/> Discover</button><button className={`nav-item ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}><Icon name="library"/> Your library</button></nav>
