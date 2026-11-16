@@ -28,17 +28,20 @@ function Cover({ color = 'violet', small = false }) {
 
 function App() {
   const [tracks, setTracks] = useState(fallbackTracks)
+  const [playlists, setPlaylists] = useState([])
+  const [view, setView] = useState('home')
   const [activeId, setActiveId] = useState(1)
   const [playing, setPlaying] = useState(true)
   const [query, setQuery] = useState('')
   const [liked, setLiked] = useState(false)
   const [volume, setVolume] = useState(72)
+  const [progress, setProgress] = useState(42)
   const active = tracks.find((track) => track.id === activeId) || tracks[0]
   const visibleTracks = useMemo(() => tracks.filter((track) => `${track.title} ${track.artist}`.toLowerCase().includes(query.toLowerCase())), [query])
   const savePlayback = (values) => fetch('/api/playback', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) }).catch(() => {})
   useEffect(() => {
-    Promise.all([fetch('/api/tracks').then((response) => response.json()), fetch('/api/playback').then((response) => response.json())])
-      .then(([trackResponse, playbackResponse]) => {
+    Promise.all([fetch('/api/tracks').then((response) => response.json()), fetch('/api/playback').then((response) => response.json()), fetch('/api/playlists').then((response) => response.json())])
+      .then(([trackResponse, playbackResponse, playlistResponse]) => {
         if (trackResponse.success) {
           const loadedTracks = trackResponse.data.map((track) => ({ ...track, time: track.duration }))
           setTracks(loadedTracks)
@@ -48,9 +51,35 @@ function App() {
           setActiveId(playbackResponse.data.track_id)
           setPlaying(Boolean(playbackResponse.data.is_playing))
           setVolume(playbackResponse.data.volume)
+          setProgress(Math.min(100, (playbackResponse.data.position_seconds / 243) * 100))
         }
+        if (playlistResponse.success) setPlaylists(playlistResponse.data)
       }).catch(() => {})
   }, [])
+  useEffect(() => {
+    if (!playing || !active) return undefined
+    const timer = window.setInterval(() => setProgress((current) => {
+      const nextProgress = current + (100 / Math.max(active.duration_seconds || 240, 1))
+      if (nextProgress >= 100) { nextTrack(); return 0 }
+      return nextProgress
+    }), 1000)
+    return () => window.clearInterval(timer)
+  }, [playing, activeId, active])
+  const loadPlaylist = (playlistId) => {
+    fetch(`/api/playlists/${playlistId}`).then((response) => response.json()).then((response) => {
+      if (!response.success || !response.data.tracks.length) return
+      setTracks(response.data.tracks.map((track) => ({ ...track, time: track.duration })))
+      setActiveId(response.data.tracks[0].id)
+      setPlaying(true)
+      setView('library')
+      setProgress(0)
+    }).catch(() => {})
+  }
+  const setPlayerProgress = (event) => {
+    const nextProgress = Number(event.target.value)
+    setProgress(nextProgress)
+    savePlayback({ track_id: active.id, is_playing: playing, volume, position_seconds: Math.round((nextProgress / 100) * (active.duration_seconds || 240)) })
+  }
   const chooseTrack = (id) => { setActiveId(id); setPlaying(true); setLiked(false); savePlayback({ track_id: id, is_playing: true, volume }) ; fetch(`/api/tracks/${id}/like`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ liked: false }) }).catch(() => {}) }
   const nextTrack = () => chooseTrack(activeId === tracks.length ? 1 : activeId + 1)
   const previousTrack = () => chooseTrack(activeId === 1 ? tracks.length : activeId - 1)
@@ -60,8 +89,8 @@ function App() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark"><i/><i/><i/></span><span>luma</span></div>
-        <nav className="main-nav" aria-label="Main navigation"><button className="nav-item active"><Icon name="home"/> Home</button><button className="nav-item"><Icon name="compass"/> Discover</button><button className="nav-item"><Icon name="library"/> Your library</button></nav>
-        <div className="side-section"><div className="section-label">Your playlists <button aria-label="Add playlist"><Icon name="plus" size={17}/></button></div><div className="playlist-list">{['Late Night Drive', 'Sunday Morning', 'Focus Flow', 'Favorites'].map((name, index) => <button className="playlist-link" key={name}><span className={`playlist-dot p${index}`}/>{name}</button>)}</div></div>
+        <nav className="main-nav" aria-label="Main navigation"><button className={`nav-item ${view === 'home' ? 'active' : ''}`} onClick={() => setView('home')}><Icon name="home"/> Home</button><button className={`nav-item ${view === 'discover' ? 'active' : ''}`} onClick={() => { setView('discover'); setQuery('') }}><Icon name="compass"/> Discover</button><button className={`nav-item ${view === 'library' ? 'active' : ''}`} onClick={() => setView('library')}><Icon name="library"/> Your library</button></nav>
+        <div className="side-section"><div className="section-label">Your playlists <button aria-label="Add playlist"><Icon name="plus" size={17}/></button></div><div className="playlist-list">{(playlists.length ? playlists : [{ id: 1, name: 'Late Night Drive' }, { id: 2, name: 'Sunday Morning' }, { id: 3, name: 'Focus Flow' }, { id: 4, name: 'Favorites' }]).map((playlist, index) => <button className="playlist-link" key={playlist.id} onClick={() => loadPlaylist(playlist.id)}><span className={`playlist-dot p${index % 4}`}/>{playlist.name}</button>)}</div></div>
         <div className="sidebar-footer"><div className="profile"><span className="avatar">AD</span><span><b>Aditya</b><small>Free account</small></span></div><button className="more" aria-label="More options"><Icon name="more"/></button></div>
       </aside>
       <section className="content">
