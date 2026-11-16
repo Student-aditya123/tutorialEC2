@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
-const tracks = [
+const fallbackTracks = [
   { id: 1, title: 'Midnight City', artist: 'M83', album: 'Hurry Up, We’re Dreaming', color: 'violet', time: '4:03' },
   { id: 2, title: 'The Less I Know The Better', artist: 'Tame Impala', album: 'Currents', color: 'orange', time: '3:36' },
   { id: 3, title: 'Intro', artist: 'The xx', album: 'xx', color: 'blue', time: '2:07' },
@@ -27,14 +27,31 @@ function Cover({ color = 'violet', small = false }) {
 }
 
 function App() {
+  const [tracks, setTracks] = useState(fallbackTracks)
   const [activeId, setActiveId] = useState(1)
   const [playing, setPlaying] = useState(true)
   const [query, setQuery] = useState('')
   const [liked, setLiked] = useState(false)
   const [volume, setVolume] = useState(72)
-  const active = tracks.find((track) => track.id === activeId)
+  const active = tracks.find((track) => track.id === activeId) || tracks[0]
   const visibleTracks = useMemo(() => tracks.filter((track) => `${track.title} ${track.artist}`.toLowerCase().includes(query.toLowerCase())), [query])
-  const chooseTrack = (id) => { setActiveId(id); setPlaying(true); setLiked(false) }
+  const savePlayback = (values) => fetch('/api/playback', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) }).catch(() => {})
+  useEffect(() => {
+    Promise.all([fetch('/api/tracks').then((response) => response.json()), fetch('/api/playback').then((response) => response.json())])
+      .then(([trackResponse, playbackResponse]) => {
+        if (trackResponse.success) {
+          const loadedTracks = trackResponse.data.map((track) => ({ ...track, time: track.duration }))
+          setTracks(loadedTracks)
+          setLiked(Boolean(loadedTracks.find((track) => track.id === activeId)?.liked))
+        }
+        if (playbackResponse.success && playbackResponse.data?.track_id) {
+          setActiveId(playbackResponse.data.track_id)
+          setPlaying(Boolean(playbackResponse.data.is_playing))
+          setVolume(playbackResponse.data.volume)
+        }
+      }).catch(() => {})
+  }, [])
+  const chooseTrack = (id) => { setActiveId(id); setPlaying(true); setLiked(false); savePlayback({ track_id: id, is_playing: true, volume }) ; fetch(`/api/tracks/${id}/like`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ liked: false }) }).catch(() => {}) }
   const nextTrack = () => chooseTrack(activeId === tracks.length ? 1 : activeId + 1)
   const previousTrack = () => chooseTrack(activeId === 1 ? tracks.length : activeId - 1)
   const upNext = tracks[activeId % tracks.length]
@@ -57,7 +74,7 @@ function App() {
         </div></section>
         <section className="section-block tracks-section"><div className="section-heading"><div><h2>Popular right now</h2><p>What everyone’s listening to</p></div><button className="text-button">View all <span>→</span></button></div><div className="track-list">{visibleTracks.map((track, index) => <button className={`track-row ${activeId === track.id ? 'selected' : ''}`} key={track.id} onClick={() => chooseTrack(track.id)}><span className="track-number">{activeId === track.id && playing ? <span className="equalizer"><i/><i/><i/></span> : String(index + 1).padStart(2, '0')}</span><Cover color={track.color} small/><span className="track-meta"><strong>{track.title}</strong><small>{track.artist}</small></span><span className="track-album">{track.album}</span><span className="track-time">{track.time}</span><span className="track-more"><Icon name="more" size={18}/></span></button>)}{visibleTracks.length === 0 && <p className="empty-state">No tracks found. Try another search.</p>}</div></section>
       </section>
-      <aside className="now-playing"><div className="now-header"><span>Now playing</span><button aria-label="More options"><Icon name="more"/></button></div><Cover color={active.color}/><div className="now-meta"><div><h2>{active.title}</h2><p>{active.artist}</p></div><button className={`heart-button ${liked ? 'liked' : ''}`} onClick={() => setLiked(!liked)} aria-label="Like track"><Icon name="heart" fill={liked ? 'currentColor' : 'none'}/></button></div><div className="progress"><div className="progress-label"><span>1:42</span><span>{active.time}</span></div><input type="range" min="0" max="100" defaultValue="42" aria-label="Track progress"/></div><div className="player-controls"><button onClick={previousTrack} aria-label="Previous track"><Icon name="prev"/></button><button className="main-play" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={22}/></button><button onClick={nextTrack} aria-label="Next track"><Icon name="next"/></button></div><div className="volume"><Icon name="volume" size={18}/><input type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(event.target.value)} aria-label="Volume"/></div><div className="up-next"><div className="up-next-heading"><span>Up next</span><button>Clear</button></div><div className="next-track"><Cover color={upNext.color} small/><span><b>{upNext.title}</b><small>{upNext.artist}</small></span><span className="next-time">{upNext.time}</span></div></div></aside>
+      <aside className="now-playing"><div className="now-header"><span>Now playing</span><button aria-label="More options"><Icon name="more"/></button></div><Cover color={active.color}/><div className="now-meta"><div><h2>{active.title}</h2><p>{active.artist}</p></div><button className={`heart-button ${liked ? 'liked' : ''}`} onClick={() => { const nextLiked = !liked; setLiked(nextLiked); fetch(`/api/tracks/${active.id}/like`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ liked: nextLiked }) }).catch(() => {}) }} aria-label="Like track"><Icon name="heart" fill={liked ? 'currentColor' : 'none'}/></button></div><div className="progress"><div className="progress-label"><span>1:42</span><span>{active.time}</span></div><input type="range" min="0" max="100" defaultValue="42" aria-label="Track progress"/></div><div className="player-controls"><button onClick={previousTrack} aria-label="Previous track"><Icon name="prev"/></button><button className="main-play" onClick={() => { const nextPlaying = !playing; setPlaying(nextPlaying); savePlayback({ track_id: active.id, is_playing: nextPlaying, volume }) }} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={22}/></button><button onClick={nextTrack} aria-label="Next track"><Icon name="next"/></button></div><div className="volume"><Icon name="volume" size={18}/><input type="range" min="0" max="100" value={volume} onChange={(event) => { const nextVolume = Number(event.target.value); setVolume(nextVolume); savePlayback({ track_id: active.id, is_playing: playing, volume: nextVolume }) }} aria-label="Volume"/></div><div className="up-next"><div className="up-next-heading"><span>Up next</span><button>Clear</button></div><div className="next-track"><Cover color={upNext.color} small/><span><b>{upNext.title}</b><small>{upNext.artist}</small></span><span className="next-time">{upNext.time}</span></div></div></aside>
     </main>
   )
 }
